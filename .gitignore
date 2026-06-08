@@ -2,6 +2,9 @@
 input/
 output/
 
+# 作品ごとの設定内容（クリエイター名等の個人情報を含むため含めない）
+docs/設定内容_*.md
+
 # macOS
 .DS_Store
 
