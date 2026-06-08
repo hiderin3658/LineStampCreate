@@ -1,0 +1,17 @@
+# 入力・出力フォルダ（公開リポジトリのため画像素材・生成物は含めない）
+input/
+output/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.python-version
+
+# エディタ
+.vscode/
+.idea/
