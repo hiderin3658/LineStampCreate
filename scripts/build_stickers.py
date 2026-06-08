@@ -86,15 +86,13 @@ def erode(mask: np.ndarray, px: int) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # レイアウト解析（グリッド検出）
 # ---------------------------------------------------------------------------
-def find_separators(profile: np.ndarray, n_expected: int, length: int,
-                    low_ratio: float = 0.01, min_gap: int = 8) -> list[int]:
-    """コンテンツ率プロファイルから、低コンテンツ帯(ガター)の中央位置を返す。
+def find_gutters(profile: np.ndarray, length: int,
+                 low_ratio: float = 0.01, min_gap: int = 8) -> list[tuple[int, int]]:
+    """コンテンツ率プロファイルから、内部の低コンテンツ帯(ガター)を [(start, end), ...] で返す。
 
-    n_expected本の内部区切りを期待し、見つかったガターを幅の広い順に採用する。
-    期待数に満たない場合は空リストを返し、呼び出し側で均等割りにフォールバックする。
+    一定幅(min_gap)以上の低コンテンツ区間のうち、画像外周の余白(端に接する帯)は除外する。
+    グリッドの列数・行数の自動推定（ガター数＋1）にも利用する。
     """
-    if n_expected <= 0:
-        return []
     low = profile < low_ratio
     segments: list[tuple[int, int]] = []
     start = None
@@ -108,8 +106,20 @@ def find_separators(profile: np.ndarray, n_expected: int, length: int,
         segments.append((start, len(low) - 1))
 
     # 端のガター(画像外周の余白)は区切りではないので除外
-    inner = [(s, e) for (s, e) in segments
-             if (e - s + 1) >= min_gap and s > 0 and e < length - 1]
+    return [(s, e) for (s, e) in segments
+            if (e - s + 1) >= min_gap and s > 0 and e < length - 1]
+
+
+def find_separators(profile: np.ndarray, n_expected: int, length: int,
+                    low_ratio: float = 0.01, min_gap: int = 8) -> list[int]:
+    """コンテンツ率プロファイルから、低コンテンツ帯(ガター)の中央位置を返す。
+
+    n_expected本の内部区切りを期待し、見つかったガターを幅の広い順に採用する。
+    期待数に満たない場合は空リストを返し、呼び出し側で均等割りにフォールバックする。
+    """
+    if n_expected <= 0:
+        return []
+    inner = find_gutters(profile, length, low_ratio, min_gap)
     # 幅の広い順に n_expected 本を採用し、位置順に並べ替え
     inner.sort(key=lambda se: -(se[1] - se[0]))
     chosen = sorted(inner[:n_expected], key=lambda se: se[0])
@@ -372,8 +382,8 @@ def main(config_path: Path) -> int:
     print(f"[1/8] 入力読込: {input_path}")
     try:
         sheet = Image.open(input_path).convert("RGBA")
-    except UnidentifiedImageError:
-        print(f"エラー: 画像として読み込めません: {input_path}")
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
+        print(f"エラー: 画像を読み込めません: {input_path} ({e})")
         return 1
 
     # 白背景前提のチェック（既に大きく透過している入力は想定外）
