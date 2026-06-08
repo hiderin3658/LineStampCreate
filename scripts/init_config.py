@@ -8,7 +8,8 @@
 使い方:
   python3 scripts/init_config.py input/Stamp_Cat2.png
   python3 scripts/init_config.py input/Stamp_Cat2.png --name Cat2
-  python3 scripts/init_config.py input/Stamp_Cat2.png --dry-run   # 書き込まず推定結果のみ表示
+  python3 scripts/init_config.py input/Stamp_Cat2.png --force    # 既存configを上書き
+  python3 scripts/init_config.py input/Stamp_Cat2.png --dry-run  # 書き込まず推定結果のみ表示
 """
 
 from __future__ import annotations
@@ -52,8 +53,24 @@ def derive_name(image_path: Path) -> str:
     return stem or image_path.stem
 
 
+def validate_name(name: str, config_dir: Path) -> str | None:
+    """name が config ディレクトリ内の安全なファイル名かを検証する。
+
+    問題があればエラーメッセージを、なければ None を返す。
+    パス区切り・絶対パス・`..` 等によるディレクトリ外への書き込みを防ぐ。
+    """
+    if not name or name in (".", ".."):
+        return f"作品名が不正です（空または '.'）: {name!r}"
+    # 生成されるパスが config ディレクトリ直下に収まるかで判定（トラバーサル/絶対パス対策）
+    candidate = (config_dir / f"{name}.json").resolve()
+    if candidate.parent != config_dir.resolve():
+        return (f"作品名にパス区切りなどの使用できない文字が含まれています: {name!r}"
+                "（半角英数字・ハイフン・アンダースコアを推奨）")
+    return None
+
+
 def detect_grid_size(image_path: Path, threshold: int):
-    """画像を解析して (cols, rows, col_gutters, row_gutters) を推定する。"""
+    """画像を解析して (cols, rows, col_gutters, row_gutters, (w, h)) を推定する。"""
     img = Image.open(image_path).convert("RGBA")
     rgb = np.array(img)[:, :, :3].astype(np.int16)
     h, w = rgb.shape[:2]
@@ -85,6 +102,7 @@ def main() -> int:
     parser.add_argument("image", help="入力シート画像のパス（例: input/Stamp_Cat2.png）")
     parser.add_argument("--name", help="作品名（省略時はファイル名から推定）")
     parser.add_argument("--threshold", type=int, default=240, help="白背景判定のしきい値(0-255)")
+    parser.add_argument("--force", action="store_true", help="既存の config を上書きする")
     parser.add_argument("--dry-run", action="store_true", help="ファイルを書き込まず推定結果のみ表示")
     args = parser.parse_args()
 
@@ -95,13 +113,20 @@ def main() -> int:
         print(f"エラー: 画像が見つかりません: {image_path}")
         return 1
 
-    try:
-        cols, rows, n_col, n_row, (w, h) = detect_grid_size(image_path, args.threshold)
-    except UnidentifiedImageError:
-        print(f"エラー: 画像として読み込めません: {image_path}")
+    # 作品名を確定し、安全性を検証（書き込み先がconfigディレクトリ外にならないように）
+    name = args.name or derive_name(image_path)
+    config_dir = ROOT / "config"
+    name_error = validate_name(name, config_dir)
+    if name_error:
+        print(f"エラー: {name_error}")
         return 1
 
-    name = args.name or derive_name(image_path)
+    try:
+        cols, rows, n_col, n_row, (w, h) = detect_grid_size(image_path, args.threshold)
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
+        print(f"エラー: 画像を読み込めません: {image_path} ({e})")
+        return 1
+
     count = cols * rows
 
     # 入力パスはリポジトリルートからの相対で保存（移植性のため）
@@ -118,21 +143,25 @@ def main() -> int:
     print(f"  推定グリッド: {cols}列 x {rows}行  = {count}個")
     if count not in VALID_COUNTS:
         print(f"  ⚠ 個数 {count} はLINEの規定({'/'.join(map(str, VALID_COUNTS))})外です。"
-              f"グリッド検出を見直すか、config の grid/count を手動調整してください。")
-    if n_col == 0 and n_row == 0:
-        print("  ⚠ ガターを検出できませんでした。白背景・格子配置の画像かを確認してください。")
+              "グリッド検出を見直すか、config の grid/count を手動調整してください。")
+    if n_col == 0 or n_row == 0:
+        print("  ⚠ 片方の軸でガターを検出できませんでした（列または行が1）。"
+              "白背景・格子配置の画像か、--threshold を確認してください。")
     print("=====================================")
 
     if args.dry_run:
         print(json.dumps(cfg, ensure_ascii=False, indent=2))
         return 0
 
-    config_dir = ROOT / "config"
-    config_dir.mkdir(exist_ok=True)
+    config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / f"{name}.json"
+    if config_path.exists() and not args.force:
+        print(f"エラー: {config_path.name} は既に存在します。"
+              "上書きするには --force を付けるか、手動で編集してください。")
+        return 1
     config_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"設定を書き出しました: {config_path}")
-    print(f"次のコマンドでスタンプ一式を生成できます:")
+    print("次のコマンドでスタンプ一式を生成できます:")
     print(f"  python3 scripts/build_stickers.py config/{name}.json")
     return 0
 

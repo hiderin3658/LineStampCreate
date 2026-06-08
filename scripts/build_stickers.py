@@ -382,8 +382,8 @@ def main(config_path: Path) -> int:
     print(f"[1/8] 入力読込: {input_path}")
     try:
         sheet = Image.open(input_path).convert("RGBA")
-    except UnidentifiedImageError:
-        print(f"エラー: 画像として読み込めません: {input_path}")
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as e:
+        print(f"エラー: 画像を読み込めません: {input_path} ({e})")
         return 1
 
     # 白背景前提のチェック（既に大きく透過している入力は想定外）
