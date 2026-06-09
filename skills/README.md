@@ -24,8 +24,8 @@ bashを実行できるエージェントであればツールを問わず同じ�
 - **編集するのはこの `skills/<skill>/` の正本だけ**。各ツール配下のコピーは直接編集しない。
 - 編集後は同期スクリプトで各ツールへ反映する：
   ```bash
-  python3 scripts/sync_skills.py          # 各ツールのディレクトリへ同期
-  python3 scripts/sync_skills.py --check  # 同期済みか検証（差分があれば非ゼロ終了）
+  python3 scripts/sync_skills.py          # 各ツールへミラー同期（不要になった古いコピーは削除）
+  python3 scripts/sync_skills.py --check  # 同期済みか検証（差分・ステールがあれば非ゼロ終了）
   ```
 - 対応ツールを増減する場合は `scripts/sync_skills.py` の `TARGET_SKILL_DIRS` を編集する。
 
