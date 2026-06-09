@@ -71,6 +71,31 @@ def flood_from_border(mask: np.ndarray, max_iter: int | None = None) -> np.ndarr
     return seed
 
 
+def flood_fill(mask: np.ndarray, seed: np.ndarray, max_iter: int | None = None) -> np.ndarray:
+    """mask(True=通行可)の上で seed を4近傍に伝播させ、seedと連結した成分をTrueで返す。
+
+    flood_from_border と同じ反復膨張だが、種を引数で受け取る汎用版。
+    連結成分の抽出（最大の塊だけ残す等）に使う。
+    """
+    h, w = mask.shape
+    if max_iter is None:
+        max_iter = h + w  # 安全のための上限（最長経路でも収束する回数）
+
+    seed = seed & mask
+    grown = np.empty_like(mask)
+    for _ in range(max_iter):
+        grown[:] = seed
+        grown[1:, :] |= seed[:-1, :]
+        grown[:-1, :] |= seed[1:, :]
+        grown[:, 1:] |= seed[:, :-1]
+        grown[:, :-1] |= seed[:, 1:]
+        grown &= mask
+        if np.array_equal(grown, seed):
+            break
+        seed, grown = grown.copy(), seed
+    return seed
+
+
 def erode(mask: np.ndarray, px: int) -> np.ndarray:
     """4近傍でpx回収縮させる（前景の最外周pxリングを削る。白フチ除去用）。"""
     for _ in range(max(0, px)):
@@ -204,6 +229,35 @@ def trim(img: Image.Image) -> Image.Image:
 def is_empty(img: Image.Image) -> bool:
     """画像が実質的に空（不透明画素がほぼ無い）かを判定する。"""
     return img.size == (1, 1) or np.array(img.getchannel("A")).max() == 0
+
+
+def isolate_subject(img: Image.Image) -> Image.Image:
+    """最大の連結成分（＝キャラ本体）だけを残し、文字や離れた装飾を除去する。
+
+    make_transparent はキャラ内部の白を保持するため、キャラは1つの大きな連結成分になる。
+    一方、上部の文字や離れた効果線・キラキラは別成分になる。最も不透明画素が多い行の
+    中央を種にキャラ本体をフラッドフィルで取り出し、それ以外を透明化する。
+    主にタブ画像をキャラのみにする用途。実質1成分（取り出した成分が前景の大半）なら元画像を返す。
+    """
+    rgba = np.array(img.convert("RGBA"))
+    fg = rgba[:, :, 3] > 0
+    if not fg.any():
+        return img
+
+    # 最も不透明画素が多い行の中央付近＝確実にキャラ本体の内部を種にする
+    row_mass = fg.sum(axis=1)
+    seed_row = int(row_mass.argmax())
+    xs = np.where(fg[seed_row])[0]
+    seed = np.zeros_like(fg)
+    seed[seed_row, int(np.median(xs))] = True
+
+    component = flood_fill(fg, seed)
+    if component.sum() >= fg.sum() * 0.98:
+        return img   # 文字・装飾が無い（ほぼ1成分）→そのまま
+
+    out = rgba.copy()
+    out[:, :, 3] = np.where(component, rgba[:, :, 3], 0)
+    return trim(Image.fromarray(out, "RGBA"))
 
 
 def even(n: int) -> int:
@@ -422,11 +476,18 @@ def main(config_path: Path) -> int:
         report.append((fname, sticker.width, sticker.height, kb))
 
     print("[7/8] メイン/タブ画像生成")
-    main_img = fit_fixed(trimmed_list[main_cfg["source_index"] - 1], *main_cfg["size"])
+    # isolate_subject=true なら文字を除いてキャラ本体だけを枠に収める（タブ画像向け）
+    main_src = trimmed_list[main_cfg["source_index"] - 1]
+    if main_cfg.get("isolate_subject"):
+        main_src = isolate_subject(main_src)
+    main_img = fit_fixed(main_src, *main_cfg["size"])
     main_path = out_dir / "main.png"
     main_kb = save_optimized(main_img, main_path, max_kb)
 
-    tab_img = fit_fixed(trimmed_list[tab_cfg["source_index"] - 1], *tab_cfg["size"])
+    tab_src = trimmed_list[tab_cfg["source_index"] - 1]
+    if tab_cfg.get("isolate_subject"):
+        tab_src = isolate_subject(tab_src)
+    tab_img = fit_fixed(tab_src, *tab_cfg["size"])
     tab_path = out_dir / "tab.png"
     tab_kb = save_optimized(tab_img, tab_path, max_kb)
 

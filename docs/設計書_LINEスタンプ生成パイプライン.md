@@ -222,12 +222,15 @@ output/Cat1/
     "feather": 1
   },
   "sticker": { "max_w": 370, "max_h": 320, "margin": 10 },
-  "main":  { "source_index": 1, "size": [240, 240] },
-  "tab":   { "source_index": 1, "size": [96, 74] },
+  "main":  { "source_index": 5, "size": [240, 240] },                      // 代表スタンプ番号
+  "tab":   { "source_index": 2, "size": [96, 74], "isolate_subject": true }, // 極小アイコン
   "max_file_kb": 1024,
   "max_zip_mb": 60
 }
 ```
+
+- `source_index`: メイン/タブの元にするスタンプ番号（1〜count、読み順）。
+- `isolate_subject`（任意・既定 false）: true にすると、そのスタンプの**最大の連結成分（＝キャラ本体）だけ**を残し、上部の文字や離れた効果線・キラキラを除去する。極小で文字が潰れるタブ画像をキャラのみにしたいときに使う。main にも指定可。
 
 ### 7.2 ディレクトリ構成（プロジェクト全体・案）
 
