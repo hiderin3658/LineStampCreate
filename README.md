@@ -1,12 +1,12 @@
 # LineStampCreate
 
-複数のスタンプを1枚にまとめた**シート画像**から、[LINE Creators Market](https://creator.line.me/ja/) にそのままアップロードできる**画像一式（透過PNG＋ZIP）**を自動生成するツールです。
+白背景に複数スタンプを格子配置した**シート画像1枚**から、[LINE Creators Market](https://creator.line.me/ja/) にそのままアップロードできる**画像一式（透過PNG＋ZIP）**と、各スタンプの**タグ設定案**を自動生成するツールです。
 
 シート画像を渡すだけで、`01.png`〜`NN.png`（透過スタンプ）・`main.png`（メイン画像）・`tab.png`（タブ画像）・アップロード用ZIPまでを一括生成します。AIコーディングエージェント向けの**スキル**としても、Pythonスクリプトを直接叩く**CLI**としても使えます。
 
 | 入力 | 出力 |
 |------|------|
-| 白背景に格子配置した1枚のシート画像 | 透過PNG一式＋LINE仕様準拠のZIP |
+| 白背景に格子配置した1枚のシート画像 | 透過PNG一式＋LINE仕様準拠のZIP＋タグ設定案 |
 
 ---
 
@@ -14,7 +14,9 @@
 
 - **個数・グリッドは自動推定** — シートの余白（ガター）を検出して列×行を判定。8 / 16 / 24 / 32 / 40 個に対応。
 - **賢い背景透過** — 縁から連結した白だけを透過するフラッドフィル方式。キャラ内部の白（毛・服のハイライト）は残す。
+- **キャラのみ抽出（`isolate_subject`）** — 極小のタブ画像などで文字や離れた装飾（効果線・キラキラ等）が潰れる場合に、最大の連結成分＝キャラ本体だけを残して除去。
 - **LINE仕様を自動で満たす** — 最大370×320px・偶数寸法・1画像1MB以下・ZIP60MB以下を保証（超過時は自動で減色）。
+- **タグ設定案の作成** — 各スタンプの言葉・感情・場面に合わせて、公式の利用可能タグから候補を選び `output/<名前>/タグ設定.md` に出力（スクリプトではなく、スキル実行時にAIエージェントが作成する成果物）。
 - **目視確認用プレビュー** — 全スタンプを市松模様背景に並べた `_preview.png` を生成し、透過漏れや切れを確認できる。
 - **追加インストール最小** — Pillow と numpy のみ（pngquant / rembg などの外部依存なし）。
 - **マルチツール対応** — Claude Code / OpenAI Codex / Cursor / Gemini CLI / Windsurf でスキルとして共有可能。
@@ -45,7 +47,7 @@ pip install -r requirements.txt
 スタンプのシート画像を `input/` に置き（例: `input/Stamp_Cat1.png`）、リポジトリのルートで次の2コマンドを実行します。
 
 ```bash
-# 1) グリッド・個数を自動推定して設定ファイルを生成
+# 1) グリッド・個数を自動推定して設定ファイルを生成（既存configがある場合は --force が必要）
 python3 scripts/init_config.py input/Stamp_Cat1.png
 #   → config/Cat1.json が出力される（推定グリッドが表示される）
 
@@ -56,11 +58,11 @@ python3 scripts/build_stickers.py config/Cat1.json
 
 生成後は **必ず `output/<名前>/_preview.png` を目視確認**してください（透過漏れ・白フチ・切れがないか）。問題なければ `output/<名前>/<名前>_line_stickers.zip` をLINE Creators Marketにアップロードします。
 
-> 推定グリッドが意図と違う場合は、生成された `config/<名前>.json` の `grid`（`cols`/`rows`）を手で直してから手順2を実行してください。透過がうまくいかない場合は同ファイルの `background.threshold`（既定240）や `feather`（既定1）を調整します。
+> 推定グリッドが意図と違う場合は、生成された `config/<名前>.json` の `grid`（`cols`/`rows`）を手で直してから手順2を実行してください。透過がうまくいかない場合は同ファイルの `background.threshold`（既定240）・`feather`（既定1）・`isolate_subject` を調整します。
 
 ### AIエージェントのスキルとして使う
 
-対応エージェント（Claude Code 等）では、シート画像を渡して「**LINEスタンプを作って**」と依頼するだけで、上記の流れを自動実行します。詳細は [`skills/line-stamp-builder/SKILL.md`](skills/line-stamp-builder/SKILL.md) を参照してください。各ツールへの配置は `python3 scripts/sync_skills.py` で同期できます（詳細は [`skills/README.md`](skills/README.md)）。
+対応エージェント（Claude Code / Cursor / Windsurf / OpenAI Codex / Gemini CLI）では、シート画像を渡して「**LINEスタンプを作って**」と依頼するだけで、スキル `line-stamp-builder` が上記の手順（生成 → 目視確認 → タグ設定案の作成）を案内・実行します。詳細は [`skills/line-stamp-builder/SKILL.md`](skills/line-stamp-builder/SKILL.md) を参照してください。各ツールへの配置は `python3 scripts/sync_skills.py` で同期できます（詳細は [`skills/README.md`](skills/README.md)）。
 
 ---
 
@@ -111,6 +113,7 @@ output/<名前>/
 ├── main.png                    … 240×240px（代表スタンプから生成）
 ├── tab.png                     … 96×74px（代表スタンプから生成）
 ├── _preview.png                … 目視確認用（市松模様背景に全スタンプを配置）
+├── タグ設定.md                  … 各スタンプのタグ設定案（スキル実行時にAIが作成）
 └── <名前>_line_stickers.zip    … アップロード用ZIP（中間フォルダなし・60MB以下）
 ```
 
@@ -130,7 +133,7 @@ LineStampCreate/
 │   ├── init_config.py      … グリッド・個数を自動推定して設定JSONを生成
 │   ├── build_stickers.py   … 設定JSONからスタンプ一式＋ZIPを生成
 │   └── sync_skills.py      … スキルを各AIツールのディレクトリへ同期
-├── skills/                 … スキルの正本（SKILL.md）
+├── skills/                 … スキルの正本（SKILL.md・詳細は skills/README.md）
 └── docs/                   … 設計書・登録手順・タグ設定資料
 ```
 
@@ -138,9 +141,9 @@ LineStampCreate/
 
 ## ドキュメント
 
-- [設計書](docs/設計書_LINEスタンプ生成パイプライン.md) … 処理パイプライン・設定スキーマ・透過方式の詳細。
-- [登録手順書](docs/手順書_LINEスタンプ登録から販売まで.md) … LINE Creators Market での登録〜販売開始の手順。
-- [タグ設定](docs/LINEスタンプ_タグ設定.md) … 審査後のタグ設定の考え方と利用可能タグ。
+- [設計書](docs/設計書_LINEスタンプ生成パイプライン.md) … 処理パイプライン・設定スキーマ（`isolate_subject` 含む）・透過方式の詳細。
+- [登録手順書](docs/手順書_LINEスタンプ登録から販売まで.md) … クリエイター登録〜審査〜販売開始の全手順。
+- [タグ設定](docs/LINEスタンプ_タグ設定.md) … タグの考え方・登録手順・利用可能タグ全一覧。
 
 ---
 
