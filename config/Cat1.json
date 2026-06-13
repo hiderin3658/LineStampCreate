@@ -3,10 +3,7 @@
   "input": "input/Stamp_Cat1.png",
   "grid": { "cols": 4, "rows": 6 },
   "count": 24,
-  "include_text": true,
-  "order": "row",
   "background": {
-    "method": "flood_fill",
     "threshold": 240,
     "feather": 1
   },
