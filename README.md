@@ -58,7 +58,7 @@ python3 scripts/build_stickers.py config/Cat1.json
 
 生成後は **必ず `output/<名前>/_preview.png` を目視確認**してください（透過漏れ・白フチ・切れがないか）。問題なければ `output/<名前>/<名前>_line_stickers.zip` をLINE Creators Marketにアップロードします。
 
-> 推定グリッドが意図と違う場合は、生成された `config/<名前>.json` の `grid`（`cols`/`rows`）を手で直してから手順2を実行してください。透過がうまくいかない場合は同ファイルの `background.threshold`（既定240）・`feather`（既定1）・`isolate_subject` を調整します。
+> 推定グリッドが意図と違う場合は、生成された `config/<名前>.json` の `grid`（`cols`/`rows`）を手で直してから手順2を実行してください。透過がうまくいかない場合は同ファイルの `background.threshold`（既定240）・`feather`（既定1）・`isolate_subject` を調整します。漢字の囲み（`日`の中など）の白は自動透過されます（`background.text_counter_cleanup`、既定 true。無効化は `false`）。
 
 ### AIエージェントのスキルとして使う
 

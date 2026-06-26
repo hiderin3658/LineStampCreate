@@ -35,7 +35,7 @@ VALID_COUNTS = (8, 16, 24, 32, 40)
 
 # 設定の既定値（画像生成に関わる技術パラメータのみ。個人情報は含めない）
 DEFAULTS = {
-    "background": {"threshold": 240, "feather": 1},
+    "background": {"threshold": 240, "feather": 1, "text_counter_cleanup": True},
     "sticker": {"max_w": 370, "max_h": 320, "margin": 10},
     "main": {"source_index": 1, "size": [240, 240]},
     "tab": {"source_index": 1, "size": [96, 74]},
