@@ -5,7 +5,8 @@
   "count": 24,
   "background": {
     "threshold": 240,
-    "feather": 1
+    "feather": 1,
+    "text_counter_cleanup": true
   },
   "sticker": { "max_w": 370, "max_h": 320, "margin": 10 },
   "main": { "source_index": 5, "size": [240, 240] },

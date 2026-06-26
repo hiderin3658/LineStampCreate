@@ -8,6 +8,7 @@ LINE Creators Market へアップロードできる画像一式（透過PNG＋ZI
   1) レイアウト解析  … 余白(ガター)検出で格子を求める（割り切れない場合は均等割りにフォールバック）
   2) セル分割        … 各スタンプを切り出す（文字も含む）
   3) 背景透過        … 縁から連結した白だけを透過（フラッドフィル方式。キャラ内部の白は保持）
+                       併せて文字グリフ内の閉じた白（漢字の囲み）だけを自動検出して透過
   4) トリミング      … 不透明領域のバウンディングボックスで余白除去
   5) リサイズ＋余白  … アスペクト比維持で縮小し、規定余白を付与（偶数・最大370x320）
   6) 最適化          … PNG保存。1MB超ならアルファを保持したままRGB減色して1MB以下を保証
@@ -106,6 +107,34 @@ def erode(mask: np.ndarray, px: int) -> np.ndarray:
         e[:, :-1] &= mask[:, 1:]
         mask = e
     return mask
+
+
+def label_components(mask: np.ndarray) -> list[np.ndarray]:
+    """maskのTrue画素を4近傍で連結成分に分割し、各成分の真偽マスクのリストで返す。
+
+    scipy非依存。未処理画素を1つ種にしてフラッドフィルで1成分を取り出す操作を、
+    全画素が振り分けられるまで繰り返す。文字グリフ・被写体などの塊の分離に使う。
+    """
+    remaining = mask.copy()
+    components: list[np.ndarray] = []
+    grown = np.empty_like(mask)
+    while remaining.any():
+        ys, xs = np.where(remaining)
+        seed = np.zeros_like(mask)
+        seed[ys[0], xs[0]] = True
+        while True:
+            grown[:] = seed
+            grown[1:, :] |= seed[:-1, :]
+            grown[:-1, :] |= seed[1:, :]
+            grown[:, 1:] |= seed[:, :-1]
+            grown[:, :-1] |= seed[:, 1:]
+            grown &= remaining
+            if np.array_equal(grown, seed):
+                break
+            seed = grown.copy()
+        components.append(seed)
+        remaining &= ~seed
+    return components
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +238,64 @@ def make_transparent(cell: Image.Image, threshold: int, feather: int) -> Image.I
         # アルファ境界を僅かにぼかしてアンチエイリアス化
         a = out.getchannel("A").filter(ImageFilter.GaussianBlur(0.6))
         out.putalpha(a)
+    return out
+
+
+def remove_text_counters(img: Image.Image, white_th: int = 244, dark_th: int = 150,
+                         text_dark_frac: float = 0.45, max_text_ratio: float = 0.12,
+                         min_text_area: int = 80) -> Image.Image:
+    """文字グリフ内部の『閉じた白』（漢字の囲み）だけを狙って透過する。
+
+    背景透過は縁に連結した白しか消せないため、漢字の囲み（日・口・欲の谷など、
+    縁から閉じた純白）が白く残る。一方その囲みは、白い装飾（鯉のぼり等）や被写体の
+    白（猫の体・服の縞・目のハイライト）と画素単位では同じ純白で区別がつかない。
+
+    そこで前景を連結成分に分け、『最大成分=被写体を除外』『小さく・大半が暗い成分=文字』
+    だけを文字領域とみなし、その内部の閉じた白のみを消す。これにより白い装飾や被写体の
+    白を巻き込まずに囲みだけを同化できる。
+    """
+    arr = np.array(img.convert("RGBA"))
+    rgb = arr[:, :, :3].astype(np.int16)
+    alpha = arr[:, :, 3].copy()
+    opaque = alpha > 128
+    if not opaque.any():
+        return img
+
+    lum = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+    dark = (lum < dark_th) & opaque
+
+    h, w = opaque.shape
+    cell_area = h * w
+    components = label_components(opaque)
+    largest = max(int(c.sum()) for c in components)
+
+    text_mask = np.zeros_like(opaque)
+    for c in components:
+        area = int(c.sum())
+        if area == largest:
+            continue                            # 最大成分=被写体 → 除外
+        if area < min_text_area or area > max_text_ratio * cell_area:
+            continue                            # 微小ノイズ / 大きい絵 → 除外
+        if dark[c].mean() < text_dark_frac:     # 成分の大半が暗い＝文字グリフ
+            continue                            # 鯉・葉など白/有彩オブジェクト → 除外
+        text_mask |= c
+
+    if not text_mask.any():
+        return img
+
+    whiteish = np.all(rgb >= white_th, axis=2) & opaque
+    transparent = alpha == 0
+    open_white = flood_from_border(whiteish | transparent) & whiteish
+    counters = whiteish & ~open_white & text_mask  # 文字内の閉じた純白＝囲み
+    if not counters.any():
+        return img
+
+    alpha[counters] = 0
+    arr[:, :, 3] = alpha
+    out = Image.fromarray(arr, "RGBA")
+    # 透過化した囲みの縁を僅かにぼかしてアンチエイリアス化
+    a = out.getchannel("A").filter(ImageFilter.GaussianBlur(0.4))
+    out.putalpha(a)
     return out
 
 
@@ -424,6 +511,8 @@ def main(config_path: Path) -> int:
     count = cfg["count"]
     threshold = cfg["background"]["threshold"]
     feather = cfg["background"]["feather"]
+    # 漢字の囲み（縁から閉じた純白）の透過。既定で有効、setごとに無効化可。
+    clean_counters = cfg["background"].get("text_counter_cleanup", True)
     s_cfg = cfg["sticker"]
     main_cfg, tab_cfg = cfg["main"], cfg["tab"]
     max_kb = cfg["max_file_kb"]
@@ -461,7 +550,11 @@ def main(config_path: Path) -> int:
     empty_cells: list[int] = []
     for i, box in enumerate(boxes, start=1):
         cell = sheet.crop(box)
-        trimmed = trim(make_transparent(cell, threshold, feather))
+        transparent = make_transparent(cell, threshold, feather)
+        if clean_counters:
+            # 文字の囲み（背景透過では消せない閉じた純白）を同化
+            transparent = remove_text_counters(transparent, white_th=max(244, threshold))
+        trimmed = trim(transparent)
         trimmed_list.append(trimmed)
         if is_empty(trimmed):
             empty_cells.append(i)
