@@ -182,18 +182,33 @@ def find_separators(profile: np.ndarray, n_expected: int, length: int,
     return [(s + e) // 2 for (s, e) in chosen]
 
 
-def detect_grid(rgb: np.ndarray, cols: int, rows: int, threshold: int):
+def detect_grid(rgb: np.ndarray, cols: int, rows: int, threshold: int,
+                content: np.ndarray | None = None):
     """セルの境界ボックス[(left, top, right, bottom), ...]を読み順で返す。
 
     余白検出に成功すればコンテンツ駆動の境界、失敗時は均等割りにフォールバックする。
+    content を渡すとそれを「コンテンツ画素」として使う（透過オフ時はアルファ由来の
+    マスクを渡す）。未指定なら白背景前提で rgb から非白をコンテンツとみなす。
     """
     h, w = rgb.shape[:2]
-    content = ~white_mask(rgb, threshold)
+    if content is None:
+        content = ~white_mask(rgb, threshold)
     col_profile = content.mean(axis=0)
     row_profile = content.mean(axis=1)
 
-    col_seps = find_separators(col_profile, cols - 1, w)
-    row_seps = find_separators(row_profile, rows - 1, h)
+    # ガターは基本 low_ratio=0.01 で検出するが、効果線・装飾が薄く跨いで期待本数に
+    # 満たない場合は段階的にしきい値を上げて再検出する（均等割りは最後の手段）。
+    def seps_adaptive(profile, n_expected: int, length: int) -> list[int]:
+        if n_expected <= 0:
+            return []
+        for low_ratio in (0.01, 0.02, 0.03, 0.05, 0.08):
+            seps = find_separators(profile, n_expected, length, low_ratio=low_ratio)
+            if seps:
+                return seps
+        return []
+
+    col_seps = seps_adaptive(col_profile, cols - 1, w)
+    row_seps = seps_adaptive(row_profile, rows - 1, h)
 
     used_fallback = []
     # 区切りが必要(2分割以上)なのに検出できなかった軸だけフォールバック
@@ -322,29 +337,43 @@ def isolate_subject(img: Image.Image) -> Image.Image:
     """最大の連結成分（＝キャラ本体）だけを残し、文字や離れた装飾を除去する。
 
     make_transparent はキャラ内部の白を保持するため、キャラは1つの大きな連結成分になる。
-    一方、上部の文字や離れた効果線・キラキラは別成分になる。最も不透明画素が多い行の
-    中央を種にキャラ本体をフラッドフィルで取り出し、それ以外を透明化する。
-    主にタブ画像をキャラのみにする用途。実質1成分（取り出した成分が前景の大半）なら元画像を返す。
+    一方、上部の文字や離れた効果線・キラキラ・吹き出しは別成分になる。前景を連結成分に
+    分け、最大成分（キャラ本体）だけを残してそれ以外を透明化する。
+    主にタブ画像をキャラのみにする用途。最大成分が前景のほぼ全部（＝文字・装飾が無い）
+    なら元画像を返す。
     """
     rgba = np.array(img.convert("RGBA"))
     fg = rgba[:, :, 3] > 0
     if not fg.any():
         return img
 
-    # 最も不透明画素が多い行の中央付近＝確実にキャラ本体の内部を種にする
-    row_mass = fg.sum(axis=1)
-    seed_row = int(row_mass.argmax())
-    xs = np.where(fg[seed_row])[0]
-    seed = np.zeros_like(fg)
-    seed[seed_row, int(np.median(xs))] = True
-
-    component = flood_fill(fg, seed)
-    if component.sum() >= fg.sum() * 0.98:
-        return img   # 文字・装飾が無い（ほぼ1成分）→そのまま
+    components = label_components(fg)
+    if not components:
+        return img
+    largest = max(components, key=lambda c: int(c.sum()))
+    # 最大成分が前景のほぼ全部＝文字・装飾が無い（実質1成分）→そのまま
+    if int(largest.sum()) >= fg.sum() * 0.995:
+        return img
 
     out = rgba.copy()
-    out[:, :, 3] = np.where(component, rgba[:, :, 3], 0)
+    out[:, :, 3] = np.where(largest, rgba[:, :, 3], 0)
     return trim(Image.fromarray(out, "RGBA"))
+
+
+def crop_top_fraction(img: Image.Image, frac: float) -> Image.Image:
+    """上部 frac（0〜1）分を透明化して切り落とし、顔まわりに寄せる。
+
+    文字がキャラ本体と接触して1成分に融合する絵柄（文字を頭の上に重ねる構図）では
+    isolate_subject で文字を分離できない。その場合に、文字帯のある上部を割合で切り、
+    顔のクローズアップにする。主にタブ画像用。
+    """
+    if not frac or frac <= 0:
+        return img
+    arr = np.array(img.convert("RGBA"))
+    h = arr.shape[0]
+    cut = min(h - 1, int(round(h * frac)))
+    arr[:cut, :, 3] = 0
+    return trim(Image.fromarray(arr, "RGBA"))
 
 
 def even(n: int) -> int:
@@ -513,6 +542,8 @@ def main(config_path: Path) -> int:
     feather = cfg["background"]["feather"]
     # 漢字の囲み（縁から閉じた純白）の透過。既定で有効、setごとに無効化可。
     clean_counters = cfg["background"].get("text_counter_cleanup", True)
+    # 透過モード: "white"(既定)=白背景から透過を作る / "preserve"=入力の既存アルファを保持（透過処理オフ）
+    preserve_alpha = cfg["background"].get("mode", "white") == "preserve"
     s_cfg = cfg["sticker"]
     main_cfg, tab_cfg = cfg["main"], cfg["tab"]
     max_kb = cfg["max_file_kb"]
@@ -529,18 +560,36 @@ def main(config_path: Path) -> int:
         print(f"エラー: 画像を読み込めません: {input_path} ({e})")
         return 1
 
-    # 白背景前提のチェック（既に大きく透過している入力は想定外）
     sheet_alpha = np.array(sheet.getchannel("A"))
-    if (sheet_alpha < 250).mean() > 0.05:
-        print("      ⚠ 入力画像が既に透過部分を多く含みます。白背景シートを想定しています。")
+    if not preserve_alpha and (sheet_alpha < 250).mean() > 0.05:
+        # 白背景前提のチェック（既に大きく透過している入力は想定外）
+        print("      ⚠ 入力画像が既に透過部分を多く含みます。透過済みなら background.mode=\"preserve\" を検討してください。")
 
     rgb = np.array(sheet)[:, :, :3].astype(np.int16)
 
-    print(f"[2/8] レイアウト解析: {cols}列 x {rows}行")
-    boxes, fallback = detect_grid(rgb, cols, rows, threshold)
+    print(f"[2/8] レイアウト解析: {cols}列 x {rows}行" + ("（透過オフ＝アルファ保持）" if preserve_alpha else ""))
+    # 透過オフ時は『透明＝コマの隙間』としてアルファでグリッド検出。通常は白背景から検出。
+    content_mask = (sheet_alpha > 8) if preserve_alpha else None
+    boxes, fallback = detect_grid(rgb, cols, rows, threshold, content=content_mask)
     if fallback:
         print(f"      ⚠ {'/'.join(fallback)}の余白検出に失敗→均等割りにフォールバック")
     boxes = boxes[:count]
+
+    # 入力解像度チェック（作る前の警告）
+    # fit_on_canvas は拡大しない（画質劣化を避ける）ため、1セルが規定枠より小さいと
+    # スタンプが上限(max_w x max_h)に届かず、他セットより小さく仕上がる。
+    inner_w = s_cfg["max_w"] - 2 * s_cfg["margin"]
+    inner_h = s_cfg["max_h"] - 2 * s_cfg["margin"]
+    min_cell_w = min(box[2] - box[0] for box in boxes)
+    min_cell_h = min(box[3] - box[1] for box in boxes)
+    if min_cell_w < inner_w or min_cell_h < inner_h:
+        print(f"      ⚠ 入力解像度が低い可能性: 1セル最小 約{min_cell_w}x{min_cell_h}px が"
+              f"規定枠 {inner_w}x{inner_h}px 未満です。")
+        print(f"        拡大はしない仕様のため、スタンプが上限 {s_cfg['max_w']}x{s_cfg['max_h']}px に"
+              f"届かず小さく仕上がる場合があります。")
+        print(f"        規定サイズいっぱいにするには、入力シートを"
+              f"1セルあたり {inner_w}x{inner_h}px 以上（目安: {inner_w * cols}x{inner_h * rows}px 以上）"
+              f"の高解像度で用意してください。")
 
     print("[3/8] セル分割＋[4/8] 背景透過＋[5/8] リサイズ＋[6/8] 最適化")
     trimmed_list: list[Image.Image] = []   # メイン/タブ生成で再利用（透過処理の重複を避ける）
@@ -550,10 +599,14 @@ def main(config_path: Path) -> int:
     empty_cells: list[int] = []
     for i, box in enumerate(boxes, start=1):
         cell = sheet.crop(box)
-        transparent = make_transparent(cell, threshold, feather)
-        if clean_counters:
-            # 文字の囲み（背景透過では消せない閉じた純白）を同化
-            transparent = remove_text_counters(transparent, white_th=max(244, threshold))
+        if preserve_alpha:
+            # 透過オフ: 入力の既存アルファをそのまま使う（背景透過・囲み白除去・フェザーを行わない）
+            transparent = cell
+        else:
+            transparent = make_transparent(cell, threshold, feather)
+            if clean_counters:
+                # 文字の囲み（背景透過では消せない閉じた純白）を同化
+                transparent = remove_text_counters(transparent, white_th=max(244, threshold))
         trimmed = trim(transparent)
         trimmed_list.append(trimmed)
         if is_empty(trimmed):
@@ -573,6 +626,8 @@ def main(config_path: Path) -> int:
     main_src = trimmed_list[main_cfg["source_index"] - 1]
     if main_cfg.get("isolate_subject"):
         main_src = isolate_subject(main_src)
+    if main_cfg.get("crop_top"):
+        main_src = crop_top_fraction(main_src, main_cfg["crop_top"])
     main_img = fit_fixed(main_src, *main_cfg["size"])
     main_path = out_dir / "main.png"
     main_kb = save_optimized(main_img, main_path, max_kb)
@@ -580,6 +635,8 @@ def main(config_path: Path) -> int:
     tab_src = trimmed_list[tab_cfg["source_index"] - 1]
     if tab_cfg.get("isolate_subject"):
         tab_src = isolate_subject(tab_src)
+    if tab_cfg.get("crop_top"):
+        tab_src = crop_top_fraction(tab_src, tab_cfg["crop_top"])
     tab_img = fit_fixed(tab_src, *tab_cfg["size"])
     tab_path = out_dir / "tab.png"
     tab_kb = save_optimized(tab_img, tab_path, max_kb)
